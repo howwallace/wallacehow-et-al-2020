@@ -1,0 +1,829 @@
+---
+title: "dci_reimbursements_mortality_analysis"
+author: "Harper Wallace"
+date: "8/1/2020"
+output:
+  html_document: default
+    #df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Users/harperwallace/Dropbox/GitHub/howw-dci-medicare-2020/")
+
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(diagis)
+library(scales)
+```
+
+#### 0. Read in raw economic data
+
+```{r}
+economic_descriptors_2000_raw <- read.csv("_csv/2000_DCI.csv", header=TRUE)
+economic_descriptors_2017_raw <- read.csv("_csv/2017_DCI.csv", header=TRUE)
+crosswalk_raw <- read.csv("_csv/zip_hsa_crosswalk.csv", header=TRUE)
+```
+
+Select just the ~`Zipcode` and ~`HSA` columns from the crosswalk, and give them better names:
+```{r}
+crosswalk <- crosswalk_raw %>% select(zipcode18, hsanum)
+colnames(crosswalk)[1] <- "Zipcode"
+colnames(crosswalk)[2] <- "HSA"
+```
+
+Make zip-wise economic data HSA-wise by adding new column `HSA` using `crosswalk` (`left_join` because there are more zip codes in crosswalk than there are in economic_descriptors_...), and clean up the table:
+```{r}
+economic_descriptors_2000_temp <- left_join(economic_descriptors_2000_raw, crosswalk, by="Zipcode")
+
+# reorder columns so "HSA" comes after "Zipcode"
+colorder_2000 <- c("Zipcode","HSA",colnames(economic_descriptors_2000_raw)[-c(1)])
+economic_descriptors_2000_zip_hsa <- economic_descriptors_2000_temp[,colorder_2000]
+
+# repeat for 2017
+economic_descriptors_2017_temp <- left_join(economic_descriptors_2017_raw, crosswalk, by="Zipcode")
+colorder_2017 <- c("Zipcode","HSA",colnames(economic_descriptors_2017_raw)[-c(1)])
+economic_descriptors_2017_zip_hsa <- economic_descriptors_2017_temp[,colorder_2017]
+```
+
+#### 1. Aggregate economic data from 2000 and 2017 to HSA-level, tidy, compute changes, quintilize by DCI change
+
+Create new summary data.frame of raw economic data aggregated by `HSA`, weighting appropriate descriptors by population.
+```{r}
+# .groups = 'drop' just suppresses a friendly message
+economic_descriptors_2000 <- economic_descriptors_2000_zip_hsa %>%
+  group_by(HSA) %>%
+  summarise(Total.Pop.2000                                = sum(Total.Population.2000),
+            DCI.2000                                      = weighted.mean(X2000.Distress.Score, Total.Population.2000),
+            X.Adults.w.o.High.School.Degree.2000          = weighted.mean(X..of.Adults.w.o.a.High.School.Degree, Total.Population.2000),
+            Poverty.Rate.2000                             = weighted.mean(Poverty.Rate, Total.Population.2000),
+            X.Prime.Age.Adults.Not.in.Work.2000           = weighted.mean(X..of.Prime.Age.Adults.Not.in.Work, Total.Population.2000),
+            Vacancy.Rate.2000                             = weighted.mean(Vacancy.Rate, Total.Population.2000),
+            X.Non.Hispanic.White.2000                     = weighted.mean(Non.Hispanic.White...of.Population, Total.Population.2000),
+            X.Hispanic.or.Latino.2000                     = weighted.mean(Hispanic.or.Latino.Share...of.Population, Total.Population.2000),
+            X.Black.or.African.American.2000              = weighted.mean(Black.or.African.American...of.Population, Total.Population.2000),
+            X.American.Indian.or.Alaska.Native.2000       = weighted.mean(American.Indian.or.Alaska.Native...of.Population, Total.Population.2000),
+            X.Asian.or.Pacific.Islander.2000              = weighted.mean(Asian.or.Pacific.Islander...of.Population, Total.Population.2000),
+            # MI17.X.25.Plus.w.Bachelors.or.Higher.2000     = weighted.mean(X..of.25..Population.w..a.Bachelors.Degree.or.Higher, Total.Population.2000),
+            # MI17.X.25.Plus.w.Advanced.Degree.2000         = weighted.mean(X..of.25..Population.w..an.Advanced.Degree, Total.Population.2000),
+            # MI17.X.Households.Receiving.Public.Assistance.Income.2000 = weighted.mean(X..of.Households.Receiving.Public.Assistance.Income, Total.Population.2000),
+            # MI17.X.Enrolled.in.College.2000               = weighted.mean(X..Enrolled.in.College, Total.Population.2000),
+            # MI17.X.18.Plus.in.Armed.Forces.2000           = weighted.mean(X..Population.18..in.Armed.Forces, Total.Population.2000),
+            # MI17.X.in.Group.Quarters.2000                 = weighted.mean(X..Population.in.Group.Quarters, Total.Population.2000),
+            .groups = 'drop'
+            )
+
+# repeat for 2017
+economic_descriptors_2017 <- economic_descriptors_2017_zip_hsa %>%
+  group_by(HSA) %>%
+  summarise(Total.Pop.2017                           = sum(Total.Population),
+            DCI.2017                                 = weighted.mean(Distress.Score, Total.Population),
+            X.Adults.w.o.High.School.Degree.2017     = weighted.mean(X..of.Adults.w.o.a.High.School.Diploma, Total.Population),
+            Poverty.Rate.2017                        = weighted.mean(Poverty.Rate, Total.Population),
+            X.Prime.Age.Adults.Not.in.Work.2017      = weighted.mean(X..of.Prime.Age.Adults.Not.in.Work, Total.Population),
+            Vacancy.Rate.2017                        = weighted.mean(Housing.Vacancy.Rate, Total.Population),
+            X.Non.Hispanic.White.2017                = weighted.mean(Non.Hispanic.White...of.Population, Total.Population),
+            X.Hispanic.or.Latino.2017                = weighted.mean(Hispanic.or.Latino.Share...of.Population, Total.Population),
+            X.Black.or.African.American.2017         = weighted.mean(Black.or.African.American...of.Population, Total.Population),
+            X.American.Indian.or.Alaska.Native.2017  = weighted.mean(American.Indian.or.Alaska.Native...of.Population, Total.Population),
+            X.Asian.or.Pacific.Islander.2017         = weighted.mean(Asian.or.Pacific.Islander...of.Population, Total.Population),
+            # MI00.X.Other.Race.2017                   = weighted.mean(Other.Race...of.Population, Total.Population),
+            # MI00.X.Two.Plus.Races.2017               = weighted.mean(Two.or.More.Races...of.Population, Total.Population),
+            # MI00.X.Foreign.Born.2017                 = weighted.mean(X..of.the.Population.Foreign.Born, Total.Population),
+            .groups = 'drop'
+            )
+```
+
+Subselect only `Total Population` and `DCI Score` columns to make truncated data.frames:
+```{r}
+dci_2000_trunc <- economic_descriptors_2000 %>%
+  select(HSA, Total.Pop.2000, DCI.2000)
+
+dci_2017_trunc <- economic_descriptors_2017 %>%
+  select(HSA, Total.Pop.2017, DCI.2017)
+```
+
+### 2. Read in and tidy raw medicare reimbursements data, using HSA quintile rankings based on DCI changes
+
+```{r}
+reimb <- data.frame()
+for (year in 2003:2015) {
+  temp_table <- read.csv(paste("_csv/_reimb/", year, "_pa_reimb_table_hsa.csv", sep=""), header=TRUE)
+  temp_table <- abs(temp_table[c(1,4,5)])
+  colnames(temp_table) <- c("HSA", "Enrollees", "PASR.Total.Reimb.per.Enrollee")
+  
+  # years where raw data gives only 20% sample
+  if (year >= 2003 & year < 2010) {
+    temp_table$Enrollees = 5*temp_table$Enrollees
+  }
+  
+  # compute total reimbursements as reimbursements per enrollee times enrollees
+  temp_table <- temp_table %>%
+    mutate(PASR.Total.Reimb = Enrollees * PASR.Total.Reimb.per.Enrollee)
+  
+  colnames(temp_table) <- c("HSA", paste(c("Enrollees.Reimb.", "PASR.Reimb.per.Enrollee.", "PASR.Total.Reimb."), year, sep=""))
+  
+  if (year == 2003) {
+    reimb <- temp_table
+  } else {
+    reimb <- inner_join(reimb, temp_table, by="HSA")
+  }
+}
+
+# remove incomplete cases while annual values are still organized in columns, to make sure each HSA has figures for each year
+reimb <- reimb[complete.cases(reimb),]
+```
+
+### 3. Read in and tidy raw medicare mortality data, using HSA quintile rankings based on DCI changes
+
+```{r}
+mortality <- data.frame()
+for (year in 2003:2015) {
+  temp_table <- read.csv(paste("_csv/_mortality/", year, "_mortality_hsa.csv", sep=""), header=TRUE)
+  temp_table <- abs(temp_table[c(1,3,4,5)])
+  colnames(temp_table) <- c("HSA", paste("Enrollees.Mortality.", year, sep=""), paste("ASR.Total.Mortality.", year, sep=""), paste("ASR.Non.HMO.Mortality.", year, sep=""))
+  if (year == 2003) {
+    mortality <- temp_table
+  } else {
+    mortality <- inner_join(mortality, temp_table, by="HSA")
+  }
+}
+
+# remove incomplete cases while annual mortalities are still arranged in columns, so each HSA has mortalities for each year 
+mortality <- mortality[complete.cases(mortality),]
+```
+
+```{r}
+medicare_merged <- inner_join(reimb, mortality, by="HSA")
+medicare_merged %>% summarise(n = n())
+```
+
+
+Compute (in new data.frame) percent change in population, absolute change in population, initial (2000) and final (2017) DCI quintiles, absolute change in DCI, and percentile, pure-quintile, and more meaningful-quintile (limits defined to make group sizes approximately equal) change in DCI. Meaningful quintile scores (in `D.DCI.Mod.Quintile`) are, for $\Delta \text{DCI} = \text{DCI}_{2017} - \text{DCI}_{2000}$:
+
+Quintile | Definition                         | Description
+---------|------------------------------------|-------------------------
+1        | $\Delta \text{DCI} <= -15$         | "Large decrease in DCI" 
+2        | $-15 < \Delta \text{DCI} <= -5$  | "Small decrease in DCI"
+3        | $-5 < \Delta \text{DCI} <= 5$  | "No change in DCI"
+4        | $5 < \Delta \text{DCI} <= 15$    | "Small increase in DCI"
+5        | $15 < \Delta \text{DCI}$           | "Large increase in DCI"
+
+```{r}
+# `inner_join` removes "incomplete cases" (i.e., rows with N/A values), e.g., due to incomplete overlap of HSA data from 2000 to 2017
+dci_change <- dci_2000_trunc %>%
+  inner_join(dci_2017_trunc, by="HSA") %>%
+  inner_join(medicare_merged, by="HSA") %>%
+  mutate(Pop.00.Quintile = cut(Total.Pop.2000, breaks=quantile(Total.Pop.2000, seq(0, 1, 0.2)), labels=c("Lowest","Low", "Mid", "Higher", "Highest"))) %>%
+  mutate(Pop.17.Quintile = cut(Total.Pop.2017, breaks=quantile(Total.Pop.2017, seq(0, 1, 0.2)), labels=c("Lowest","Low", "Mid", "Higher", "Highest"))) %>%
+  mutate(X.D.Total.Pop = 100*((Total.Pop.2017 / Total.Pop.2000)-1)) %>%
+  mutate(Abs.D.Total.Pop = Total.Pop.2017 - Total.Pop.2000) %>%
+  mutate(DCI.00.Quintile = cut(DCI.2000, breaks=quantile(DCI.2000, seq(0, 1, 0.2)), labels=c("Lowest", "Lower", "Mid", "Higher", "Highest"))) %>%
+  mutate(DCI.17.Quintile = cut(DCI.2017, breaks=quantile(DCI.2017, seq(0, 1, 0.2)), labels=c("Lowest", "Lower", "Mid", "Higher", "Highest"))) %>%
+  mutate(DCI.17.LowThree = factor(ifelse(DCI.17.Quintile == "Highest" | DCI.17.Quintile == "Higher", "≥ Higher 2017 DCI", "≤ Mid 2017 DCI"), levels=paste(c("≤ Mid", "≥ Higher"), "2017 DCI"))) %>%
+  mutate(DCI.17.HighThree = factor(ifelse(DCI.17.Quintile == "Lowest" | DCI.17.Quintile == "Lower", "≤ Lower 2017 DCI", "≥ Mid 2017 DCI"), levels=paste(c("≤ Lower", "≥ Mid"), "2017 DCI"))) %>%
+  mutate(D.DCI = DCI.2017 - DCI.2000) %>%
+  mutate(D.DCI.Percentile = percent_rank(D.DCI)) %>%
+  mutate(D.DCI.Quintile = cut(D.DCI, breaks=quantile(D.DCI, seq(0, 1, 0.2)), labels=1:5)) %>%
+  mutate(D.DCI.Mod.Quintile = cut(D.DCI, breaks=c(-Inf, -15, -5, 5, 15, Inf), labels=c("Large decrease", "Small decrease", "No change", "Small increase", "Large increase"))) %>%
+  mutate(DCI.00.Tertile = cut(DCI.2000, breaks=quantile(DCI.2000, seq(0, 1, 1/3)), labels=c("Low", "Mid", "High"))) %>%
+  mutate(DCI.17.Tertile = cut(DCI.2017, breaks=quantile(DCI.2017, seq(0, 1, 1/3)), labels=c("Low", "Mid", "High"))) %>%
+  mutate(D.DCI.Mod.Tertile = paste(DCI.00.Tertile, ">", DCI.17.Tertile)) %>%
+  mutate(DCI.00.Secondile = cut(DCI.2000, breaks=quantile(DCI.2000, seq(0, 1, 0.5)), labels=c("Low", "High"))) %>%
+  mutate(DCI.17.Secondile = cut(DCI.2017, breaks=quantile(DCI.2017, seq(0, 1, 0.5)), labels=c("Low", "High"))) %>%
+  mutate(D.DCI.Mod.Secondile = paste(DCI.00.Secondile, ">", DCI.17.Secondile))
+
+dci_change %>% summarise(n = n())
+
+# remove remaining "incomplete cases"
+dci_change <- dci_change[complete.cases(dci_change),]
+
+# reorder factor levels for tertile and secondile so that the legend order in plots is Low -> High
+dci_change$D.DCI.Mod.Tertile <- factor(dci_change$D.DCI.Mod.Tertile, levels=c(paste("Low > ", c("Low", "Mid", "High"), sep=""), paste("Mid > ", c("Low", "Mid", "High"), sep=""), paste("High > ", c("Low", "Mid", "High"), sep="")))
+dci_change$D.DCI.Mod.Secondile <- factor(dci_change$D.DCI.Mod.Secondile, levels=rev(levels(as.factor(dci_change$D.DCI.Mod.Secondile))))
+```
+
+Summary table describing quintiles for tertile-based change in DCI (`D.DCI.Mod.Tertile`):
+```{r}
+dci_change %>%
+  group_by(D.DCI.Mod.Tertile) %>%
+  summarise(min.D.DCI = min(D.DCI),
+            max.D.DCI = max(D.DCI),
+            n = n(),
+            avg.X.D.Total.Pop = mean(X.D.Total.Pop),
+            avg.Abs.D.Total.Pop = mean(Abs.D.Total.Pop),
+            .groups = 'drop')
+```
+
+Summary table describing quintiles for secondile-based change in DCI (`D.DCI.Mod.Secondile`):
+```{r}
+dci_change %>%
+  group_by(D.DCI.Mod.Secondile) %>%
+  summarise(min.D.DCI = min(D.DCI),
+            max.D.DCI = max(D.DCI),
+            n = n(),
+            avg.X.D.Total.Pop = mean(X.D.Total.Pop),
+            avg.Abs.D.Total.Pop = mean(Abs.D.Total.Pop),
+            .groups = 'drop')
+```
+
+Summary table describing quintiles for 2000 Population (`Pop.00.Quintile`):
+```{r}
+dci_change %>%
+  group_by(Pop.00.Quintile) %>%
+  summarise(min.D.DCI = min(D.DCI),
+            max.D.DCI = max(D.DCI),
+            n = n(),
+            avg.X.D.Total.Pop = mean(X.D.Total.Pop),
+            avg.Abs.D.Total.Pop = mean(Abs.D.Total.Pop),
+            .groups = 'drop')
+```
+
+Summary table describing quintiles for 2017 Population (`Pop.17.Quintile`):
+```{r}
+dci_change %>%
+  group_by(Pop.17.Quintile) %>%
+  summarise(min.D.DCI = min(D.DCI),
+            max.D.DCI = max(D.DCI),
+            n = n(),
+            avg.X.D.Total.Pop = mean(X.D.Total.Pop),
+            avg.Abs.D.Total.Pop = mean(Abs.D.Total.Pop),
+            .groups = 'drop')
+```
+
+Summary table describing quintiles for 2000 DCI (`DCI.00.Quintile`):
+```{r}
+dci_change %>%
+  group_by(DCI.00.Quintile) %>%
+  summarise(min.D.DCI = min(D.DCI),
+            max.D.DCI = max(D.DCI),
+            n = n(),
+            avg.X.D.Total.Pop = mean(X.D.Total.Pop),
+            avg.Abs.D.Total.Pop = mean(Abs.D.Total.Pop),
+            .groups = 'drop')
+```
+
+Summary table describing quintiles for 2017 DCI (`DCI.17.Quintile`):
+```{r}
+dci_change %>%
+  group_by(DCI.17.Quintile) %>%
+  summarise(min.D.DCI = min(D.DCI),
+            max.D.DCI = max(D.DCI),
+            n = n(),
+            avg.X.D.Total.Pop = mean(X.D.Total.Pop),
+            avg.Abs.D.Total.Pop = mean(Abs.D.Total.Pop),
+            .groups = 'drop')
+```
+
+Summary table describing quintiles for absolute change in DCI (`D.DCI.Mod.Quintile`):
+```{r}
+dci_change %>%
+  group_by(D.DCI.Mod.Quintile) %>%
+  summarise(min.D.DCI = min(D.DCI),
+            max.D.DCI = max(D.DCI),
+            n = n(),
+            avg.X.D.Total.Pop = mean(X.D.Total.Pop),
+            avg.Abs.D.Total.Pop = mean(Abs.D.Total.Pop),
+            .groups = 'drop')
+```
+
+
+Truncated table mapping HSAs to DCI-relevant quintiles for use with medicare usage data:
+```{r}
+dci_quantile_crossover <- select(dci_change, HSA, DCI.00.Quintile, DCI.17.Quintile, DCI.17.LowThree, DCI.17.HighThree, D.DCI.Mod.Quintile, DCI.17.Secondile, D.DCI.Mod.Tertile, D.DCI.Mod.Secondile)
+
+dci_quantile_crossover %>% summarise(n = n())
+```
+
+
+### 3. Price-, age-, sex-, race-adjusted reimbursement per enrollee by year
+
+```{r}
+enrollees_reimb <-          medicare_merged %>% select(HSA, starts_with("Enrollees.Reimb"))
+PASR_reimb_per_enrollee <-  medicare_merged %>% select(HSA, starts_with("PASR.Reimb.per"))
+PASR_total_reimb <-         medicare_merged %>% select(HSA, starts_with("PASR.Total"))
+
+colnames(enrollees_reimb)[(-12:0) + ncol(enrollees_reimb)] <-                  2003:2015
+colnames(PASR_reimb_per_enrollee)[(-12:0) + ncol(PASR_reimb_per_enrollee)] <-  2003:2015
+colnames(PASR_total_reimb)[(-12:0) + ncol(PASR_total_reimb)] <-                2003:2015
+
+# needed to fix a weird dplylr/reshape2 error per [https://stackoverflow.com/questions/16941111/r-cannot-melt-data-frame]
+enrollees_reimb <-          as.data.frame(enrollees_reimb)
+PASR_reimb_per_enrollee <-  as.data.frame(PASR_reimb_per_enrollee)
+PASR_total_reimb <-         as.data.frame(PASR_total_reimb)
+
+enrollees_reimb_melted <- melt(enrollees_reimb, id="HSA")
+colnames(enrollees_reimb_melted)[(-1:0) + ncol(enrollees_reimb_melted)] <- c("Year", "Enrollees")
+
+PASR_reimb_per_enrollee_melted <- melt(PASR_reimb_per_enrollee, id="HSA")
+colnames(PASR_reimb_per_enrollee_melted)[(-1:0) + ncol(PASR_reimb_per_enrollee_melted)] <- c("Year", "PASR.Reimb.per.Enrollee")
+
+PASR_total_reimb_melted <- melt(PASR_total_reimb, id="HSA")
+colnames(PASR_total_reimb_melted)[(-1:0) + ncol(PASR_total_reimb_melted)] <- c("Year", "PASR.Total.Reimb")
+
+reimb_merged_temp_0 <-  left_join(enrollees_reimb_melted, PASR_reimb_per_enrollee_melted, by=c("HSA", "Year"))
+reimb_merged_temp_1 <-  left_join(PASR_total_reimb_melted, reimb_merged_temp_0, by=c("HSA", "Year"))
+reimb_merged_temp_2 <-  left_join(dci_quantile_crossover, reimb_merged_temp_1, by="HSA")
+
+# remove any remaining incomplete cases
+reimb_merged <- reimb_merged_temp_2[complete.cases(reimb_merged_temp_2),]
+
+# total HSAs used in reimbursements analysis (total entries for all years divided by 13 years)
+reimb_merged %>% summarise(n = n() / 13)
+```
+
+Testing to ensure weighting reimbursements by enrollees for each HSA is working correctly
+```{r}
+# subset <- reimb_merged[reimb_merged$D.DCI.Mod.Tertile == "Low > High", ]
+# some_hsas <- subset[subset$HSA == 6040 | subset$HSA == 11096 | subset$HSA == 23049, ]
+# 
+# ggplot(some_hsas, aes(Year, Enrollees, group=as.factor(HSA), color=as.factor(HSA))) +
+#   geom_line() +
+#   scale_color_hue(direction = -1) +
+#   facet_grid(. ~ D.DCI.Mod.Secondile) +
+#   labs(y = "Enrollees", color = "HSA")
+# 
+# ggplot(some_hsas, aes(Year, PASR.Reimb.per.Enrollee, group=as.factor(HSA), color=as.factor(HSA))) +
+#   geom_line() +
+#   scale_color_hue(direction = -1) +
+#   facet_grid(. ~ D.DCI.Mod.Secondile) +
+#   labs(y = "Reimbursements per Enrollee", color = "HSA")
+# 
+# some_reimb_by_dci <- some_hsas %>%
+#    group_by(D.DCI.Mod.Tertile, Year) %>%
+#    summarise(n = n(),
+#              wtd.Reimb.per.Enrollee = weighted.mean(PASR.Reimb.per.Enrollee, Enrollees),
+#              se.Reimb.per.Enrollee = weighted_se(PASR.Reimb.per.Enrollee, Enrollees),
+#              .groups = 'drop')
+# 
+# ggplot(some_reimb_by_dci, aes(Year, wtd.Reimb.per.Enrollee, group=as.factor(D.DCI.Mod.Tertile), color=as.factor(D.DCI.Mod.Tertile))) +
+#   geom_errorbar(aes(ymin=wtd.Reimb.per.Enrollee - se.Reimb.per.Enrollee, ymax=wtd.Reimb.per.Enrollee + se.Reimb.per.Enrollee), width=.1, color='black') +
+#   geom_line(color='black') +
+#   scale_color_hue(direction = -1) + 
+#   labs(y = "Reimbursements", color = "HSA")
+# 
+# geom_smooth really massages the curve -- avoid
+# ggplot(some_hsas, aes(Year, PASR.Reimb.per.Enrollee, group=as.factor(D.DCI.Mod.Tertile), color=as.factor(D.DCI.Mod.Tertile))) +
+#   geom_smooth(method = 'gam', formula = y ~ s(x, bs = "cs")) +
+#   scale_color_hue(direction = -1) + 
+#   labs(y = "Total A + B reimbursements per enrollee (PASR-adj)", color = "HSA")
+```
+
+#### Repeatable plotting, with standard error bars (weighted standard error calculated using diagis package)
+
+```{r}
+plot_hsas <- function(df, ylab) {
+  colnames(df) <- c("HSA", "Year", "DCI.Quantile", "Enrollees", "Measure")
+  
+  default_colors <- rev(hue_pal()(5))
+  num_colors <- nlevels(df$DCI.Quantile)
+  if (num_colors == 2) {
+    color_values <- default_colors[c(1,5)]
+  } else {
+    color_values <- default_colors
+  }
+  
+  theme_set(theme_bw())
+  ggplot(df, aes(Year, Measure, group=as.factor(HSA), color=as.factor(DCI.Quantile))) + 
+    geom_line() +
+    scale_color_manual(values = color_values) + 
+    facet_grid(. ~ DCI.Quantile) +
+    labs(y = ylab) +
+    theme(legend.position='none') +
+    theme(axis.title.x = element_blank()) + 
+    theme(axis.ticks.x = element_blank()) + 
+    theme(axis.text.x = element_blank())
+}
+
+plot_weighted <- function(df, ylab, legend_title="", legend_values = NULL, linetype_values, linesize_values, y_lims, dollars_not_percent) {
+  colnames(df) <- c("HSA", "Year", "DCI.Quantile", "Enrollees", "Measure")
+  if (!is.null(legend_values)) {
+    levels(df$DCI.Quantile) <- legend_values
+  }
+  
+  # default_colors <- rev(hue_pal()(5))
+  # num_colors <- nlevels(df$DCI.Quantile)
+  # if (num_colors == 2) {
+  #   color_values <- default_colors[c(1,5)]
+  # } else {
+  #   color_values <- default_colors
+  # }
+  
+  df_by_dci <- df %>%
+     group_by(DCI.Quantile, Year) %>%
+     summarise(n = n(),
+               wtd.Measure = weighted.mean(Measure, Enrollees),
+               se.Measure = weighted_se(Measure, Enrollees),
+               .groups = 'drop')
+  
+  theme_set(theme_bw())
+  p <- ggplot(df_by_dci, aes(Year, wtd.Measure, group=DCI.Quantile)) +
+    geom_line(aes(linetype=DCI.Quantile, size=DCI.Quantile)) +
+    # scale_color_manual(values = color_values) + 
+    scale_linetype_manual(name = legend_title, values = linetype_values) +
+    scale_size_manual(name = legend_title, values = linesize_values) +
+    # geom_errorbar(aes(ymin=wtd.Measure - se.Measure, ymax=wtd.Measure + se.Measure), width=.1) +
+    labs(y = ylab) +
+    theme(legend.position = 'top') +
+    theme(legend.title = element_text(size=12)) + 
+    theme(legend.text = element_text(size=12)) + 
+    theme(axis.text = element_text(size=12)) +
+    theme(axis.title.y = element_text(size=14, margin = margin(t = 0, r = 8, b = 0, l = 0))) +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.ticks = element_line(colour='black', size=0.2)) +
+    theme(panel.grid.minor = element_blank()) +
+    theme(panel.grid.major.x = element_blank()) +
+    theme(panel.grid.minor.y = element_blank()) +
+    theme(panel.grid.major.y = element_line(colour='black', size=0.2)) +
+    theme(panel.background = element_rect(colour='black', size=0.8)) + 
+    theme(plot.margin = margin(0, 10, 5, 10)) +
+    scale_x_discrete(expand = c(0.01, 0.01)) # breaks = 2003:2015, labels = paste("'", substring(as.character(2003:2015), 3, 4), sep=""), 
+  
+  if (dollars_not_percent) {
+    p + scale_y_continuous(limits = y_lims,
+                           breaks = seq(y_lims[1], y_lims[2], by = 1000),
+                           expand = c(0.01, 0.01),
+                           labels=scales::dollar_format())
+  } else {
+    p + scale_y_continuous(limits = y_lims,
+                           breaks = seq(y_lims[1], y_lims[2], by = 0.5),
+                           expand = c(0.01, 0.01),
+                           labels=scales::percent_format(scale = 1, accuracy = 0.1))
+  }
+  
+  # if (inset)
+  #   p + theme(
+  #     legend.position = c(.97, .05),
+  #     legend.justification = c("right", "bottom"),
+  #     legend.box.just = "right",
+  #     legend.margin = margin(6, 6, 6, 6),
+  #     legend.background = element_rect(colour = 'black', fill = 'white', size=0.3, linetype='solid')
+  #   )
+  # else
+  #   p
+}
+```
+
+#### Repeatable statistical testing (two-way ANOVA)
+
+```{r}
+anova_condensed <- function(df, alpha) {
+  colnames(df) <- c("HSA", "Year", "DCI.Quantile", "Enrollees", "Measure")
+
+  all_p_vals <- data.frame()
+  
+  for (year in 2003:2015) {
+    aov.result <- aov(Measure ~ DCI.Quantile, weights = Enrollees, data = df[df$Year==year,])
+    tukey.result <- TukeyHSD(aov.result)
+    p_vals <- round(tukey.result$DCI.Quantile[,'p adj'], 4)
+    if (year == 2003) {
+      p_vals <- data.frame(p_vals)
+      p_vals[p_vals$p_vals >= alpha,] = "N.S."
+      all_p_vals <- cbind(rownames(p_vals), p_vals)
+      rownames(all_p_vals) <- NULL
+      colnames(all_p_vals) <- c("Tukey.Pair", paste(year, ".p.adj", sep=""))
+    } else {
+      p_vals <- data.frame(p_vals)
+      p_vals[p_vals$p_vals >= alpha,] = "N.S."
+      p_vals_temp <- cbind(rownames(p_vals), p_vals)
+      rownames(p_vals_temp) <- NULL
+      colnames(p_vals_temp) <- c("Tukey.Pair", paste(year, ".p.adj", sep=""))
+      all_p_vals <- left_join(all_p_vals, p_vals_temp, by="Tukey.Pair")
+    }
+  }
+  
+  all_p_vals
+}
+```
+
+
+#### Plot reimbursements per enrollee
+
+By secondile: **Change in DCI**
+```{r}
+# subset <- select(reimb_merged, HSA, Year, D.DCI.Mod.Secondile, Enrollees, PASR.Reimb.per.Enrollee)
+# 
+# plot_hsas(subset, ylab = "A + B reimbursements per enrollee ($, PASR-adj)", quantile_type = "DCI change")
+# plot_weighted(subset, ylab = "A + B reimbursements per enrollee ($, PASR-adj)", quantile_type = "DCI change")
+```
+
+By tertile: **Change in DCI**
+```{r}
+# subset <- select(reimb_merged, HSA, Year, D.DCI.Mod.Tertile, Enrollees, PASR.Reimb.per.Enrollee)
+# 
+# plot_hsas(subset, ylab = "A + B reimbursements per enrollee ($, PASR-adj)", quantile_type = "DCI change")
+# plot_weighted(subset, ylab = "A + B reimbursements per enrollee ($, PASR-adj)", quantile_type = "DCI change")
+```
+
+By quintile: **2000 DCI**
+```{r}
+subset <- select(reimb_merged, HSA, Year, DCI.00.Quintile, Enrollees, PASR.Reimb.per.Enrollee)
+
+# plot_hsas(subset, ylab = "A + B reimbursements per enrollee (PASR-adj)")
+plot_weighted(subset, ylab = "Annual per-capita expenditures (PASR-adj)",
+              legend_title = "Local economic distress: ",
+              legend_values = c("Lowest" = "Lowest", "Lower" = "2nd", "Mid" = "3rd", "Higher" = "4th", "Highest" = "Highest"),
+              linetype_values = c('dotted', 'dashed', 'twodash', 'solid', 'solid'),
+              linesize_values = c(0.5, 0.5, 0.5, 0.5, 1),
+              y_lims = c(6000, 12000),
+              dollars_not_percent = TRUE)
+
+height = 5
+aspect_ratio = 1.4
+ggsave("/Users/harperwallace/Dropbox/GitHub/howw-dci-medicare-2020/_drafts/_figures/1a.png", height = height, width = height * aspect_ratio, units = "in")
+
+# p + theme(legend.position = 'none')
+```
+
+(p-values for ANOVA, year by year)
+```{r}
+anova_condensed(subset, 0.001)
+```
+
+(Ratios of Highest / Lowest reimbursements, year by year)
+```{r}
+subset[subset$DCI.00.Quintile == "Lowest" | subset$DCI.00.Quintile == "Highest",] %>%
+  group_by(DCI.00.Quintile, Year) %>%
+  summarise(wtd.PASR.Reimb.per.Enrollee = weighted.mean(PASR.Reimb.per.Enrollee, Enrollees),
+            .groups = 'drop') %>%
+  spread(DCI.00.Quintile, wtd.PASR.Reimb.per.Enrollee) %>%
+  mutate(Highest.over.Lowest = Highest / Lowest)
+```
+
+By quintile: **2017 DCI**
+```{r}
+# subset <- select(reimb_merged, HSA, Year, DCI.17.Quintile, Enrollees, PASR.Reimb.per.Enrollee)
+
+# ratios_summary <- subset[subset$DCI.17.Quintile == "Lowest" | subset$DCI.17.Quintile == "Highest",] %>%
+#   group_by(DCI.17.Quintile, Year) %>%
+#   summarise(wtd.PASR.Reimb.per.Enrollee = weighted.mean(PASR.Reimb.per.Enrollee, Enrollees),
+#             .groups = 'drop') %>%
+#   spread(DCI.17.Quintile, wtd.PASR.Reimb.per.Enrollee) %>%
+#   mutate(Highest.over.Lowest = Highest / Lowest)
+# ratios_summary
+
+# plot_hsas(subset, ylab = "A + B reimbursements per enrollee (PASR-adj)")
+# plot_weighted(subset, ylab = "A + B reimbursements per enrollee (PASR-adj)",
+#               linetype_values = c('dotted', 'dashed', 'twodash', 'solid', 'solid'),
+#               linesize_values = c(0.5, 0.5, 0.5, 0.5, 1),
+#               y_lims = c(6000, 11000),
+#               dollars_not_percent = TRUE)
+```
+
+# Per-capita spending is higher in HSAs with higher DCIs, i.e., in economically worse-off places.
+
+By quintile: **Change in DCI**
+```{r}
+# subset <- select(reimb_merged, HSA, Year, D.DCI.Mod.Quintile, Enrollees, PASR.Reimb.per.Enrollee)
+# 
+# plot_hsas(subset, ylab = "A + B reimbursements per enrollee ($, PASR-adj)", quantile_type = "DCI change")
+# plot_weighted(subset, ylab = "A + B reimbursements per enrollee ($, PASR-adj)", quantile_type = "DCI change")
+```
+
+By cross-quintile: **Change in DCI from 2000**
+```{r}
+subset_temp_0 <- reimb_merged[reimb_merged$DCI.00.Quintile == "Lowest",]
+subset_0 <- select(subset_temp_0, HSA, Year, DCI.17.HighThree, Enrollees, PASR.Reimb.per.Enrollee)
+levels(subset_0$DCI.17.HighThree) <- c("≤ Lower 2017 DCI"="Lowest > Low", "≥ Mid 2017 DCI"="Lowest > High")
+colnames(subset_0) <- c("HSA", "Year", "DCI.Change", "Enrollees", "PASR.Reimb.per.Enrollee")
+
+subset_temp_1 <- reimb_merged[reimb_merged$DCI.00.Quintile == "Highest",]
+subset_1 <- select(subset_temp_1, HSA, Year, DCI.17.LowThree, Enrollees, PASR.Reimb.per.Enrollee)
+levels(subset_1$DCI.17.LowThree) <- c("≤ Mid 2017 DCI"="Highest > Low", "≥ Higher 2017 DCI"="Highest > High")
+colnames(subset_1) <- c("HSA", "Year", "DCI.Change", "Enrollees", "PASR.Reimb.per.Enrollee")
+
+
+subsets_merged <- bind_rows(subset_0, subset_1)
+subsets_merged %>%
+  group_by(DCI.Change) %>%
+  summarise(n = n() / 13,    # divide by number of years to get number HSAs
+            .groups = 'drop')
+
+subsets_merged$DCI.Change <- factor(subsets_merged$DCI.Change, levels=c("Lowest > Low", "Lowest > High", "Highest > High", "Highest > Low"))
+
+plot_weighted(subsets_merged, ylab = "Annual per-capita expenditures (PASR-adj)",
+              legend_values = c("Started and remained low",
+                                "Started low but got worse",
+                                "Started and remained high",
+                                "Started high and got better"),
+              linetype_values = c('solid', 'dotted', 'solid', 'dotted'),
+              linesize_values = c(0.5, 0.5, 1, 1),
+              y_lims = c(6000, 12000),
+              dollars_not_percent = TRUE) +
+  guides(linesize=guide_legend(nrow=2,byrow=TRUE)) + 
+  guides(linetype=guide_legend(nrow=2,byrow=TRUE))
+
+height = 5 * 1.075
+aspect_ratio = 1.42 / 1.075
+ggsave("/Users/harperwallace/Dropbox/GitHub/howw-dci-medicare-2020/_drafts/_figures/1b.png", height = height, width = height * aspect_ratio, units = "in")
+```
+
+(p-values for ANOVA, year by year)
+```{r}
+anova_condensed(subsets_merged, 0.5)
+# anova_result <- anova_condensed(subsets_merged, 0.5)
+# colnames(anova_result) <- c("Tukey.Pair", unique(subset_2$Year))
+# print(sapply(anova_result, as.character))
+```
+
+By cross-quintile: **Change in DCI from highest 2000**
+```{r}
+# plot_hsas(subset_1, ylab = "A + B reimbursements per enrollee (PASR-adj)")
+# plot_weighted(subset_1, ylab = "A + B reimbursements per enrollee (PASR-adj)",
+#               linetype_values = c('dotted', 'solid'),
+#               linesize_values = c(0.5, 1),
+#               y_lims = c(6000, 12000),
+#               dollars_not_percent = TRUE)
+```
+
+# However, per-capita spending is also higher in HSAs that decreased most dramatically (2000--2017), i.e., places that became dramatically economically better-off.
+
+### 6. Age-, sex-, and race-adjusted mortality rates by year
+
+```{r}
+enrollees_mortality <-    medicare_merged %>% select(HSA, starts_with("Enrollees"))
+ASR_total_mortality <-    medicare_merged %>% select(HSA, starts_with("ASR.Total"))
+ASR_non_hmo_mortality <-  medicare_merged %>% select(HSA, starts_with("ASR.Non.HMO"))
+
+colnames(enrollees_mortality) <-    c("HSA", 2003:2015)
+colnames(ASR_total_mortality) <-    c("HSA", 2003:2015)
+colnames(ASR_non_hmo_mortality) <-  c("HSA", 2003:2015)
+
+# needed to fix a weird dplylr/reshape2 error per [https://stackoverflow.com/questions/16941111/r-cannot-melt-data-frame]
+enrollees_mortality <-    as.data.frame(enrollees_mortality)
+ASR_total_mortality <-    as.data.frame(ASR_total_mortality)
+ASR_non_hmo_mortality <-  as.data.frame(ASR_non_hmo_mortality)
+
+enrollees_mortality_melted <- melt(enrollees_mortality, id="HSA")
+colnames(enrollees_mortality_melted)[(-1:0) + ncol(enrollees_mortality_melted)] <- c("Year", "Enrollees")
+
+ASR_total_mortality_melted <- melt(ASR_total_mortality, id="HSA")
+colnames(ASR_total_mortality_melted)[(-1:0) + ncol(ASR_total_mortality_melted)] <- c("Year", "ASR.Total.Mortality")
+
+ASR_non_hmo_mortality_melted <- melt(ASR_non_hmo_mortality, id="HSA")
+colnames(ASR_non_hmo_mortality_melted)[(-1:0) + ncol(ASR_non_hmo_mortality_melted)] <- c("Year", "ASR.Non.HMO.Mortality")
+
+mortality_merged_temp_0 <-  left_join(ASR_non_hmo_mortality_melted, ASR_total_mortality_melted, by=c("HSA", "Year"))
+mortality_merged_temp_1 <-  left_join(enrollees_mortality_melted, mortality_merged_temp_0, by=c("HSA", "Year"))
+mortality_merged_temp_2 <-  left_join(dci_quantile_crossover, mortality_merged_temp_1, by="HSA")
+
+# remove any incomplete cases 
+mortality_merged <-         mortality_merged_temp_2[complete.cases(mortality_merged_temp_2),]
+
+# total HSAs used in mortality analysis (total entries divided by 13 years)
+mortality_merged %>% summarise(n = n() / 13)
+```
+
+#### Plot non-HMO mortality
+
+By secondile: **Change in DCI**
+```{r}
+# subset <- select(mortality_merged, HSA, Year, D.DCI.Mod.Secondile, Enrollees, ASR.Non.HMO.Mortality)
+# 
+# plot_hsas(subset, ylab = "Non-HMO mortality (%, ASR-adj)", quantile_type = "DCI change")
+# plot_weighted(subset, ylab = "Non-HMO mortality (%, ASR-adj)", quantile_type = "DCI change", inset = FALSE)
+```
+
+By tertile: **Change in DCI**
+```{r}
+# subset <- select(mortality_merged, HSA, Year, D.DCI.Mod.Tertile, Enrollees, ASR.Non.HMO.Mortality)
+# 
+# plot_hsas(subset, ylab = "Non-HMO mortality (%, ASR-adj)", quantile_type = "DCI change")
+# plot_weighted(subset, ylab = "Non-HMO mortality (%, ASR-adj)", quantile_type = "DCI change", inset = FALSE)
+```
+
+By quintile: **2000 DCI**
+```{r}
+subset <- select(mortality_merged, HSA, Year, DCI.00.Quintile, Enrollees, ASR.Non.HMO.Mortality)
+
+# plot_hsas(subset, ylab = "Non-HMO mortality (ASR-adj)")
+plot_weighted(subset, ylab = "Fee-for-service mortality rate (ASR-adj)",
+              legend_title = "Local economic distress: ",
+              legend_values = c("Lowest" = "Lowest", "Lower" = "2nd", "Mid" = "3rd", "Higher" = "4th", "Highest" = "Highest"),
+              linetype_values = c('dotted', 'dashed', 'twodash', 'solid', 'solid'),
+              linesize_values = c(0.5, 0.5, 0.5, 0.5, 1),
+              y_lims = c(3.5, 6),
+              dollars_not_percent = FALSE)
+
+height = 5
+aspect_ratio = 1.4
+ggsave("/Users/harperwallace/Dropbox/GitHub/howw-dci-medicare-2020/_drafts/_figures/2a.png", height = height, width = height * aspect_ratio, units = "in")
+
+# p + theme(legend.position = 'none')
+```
+
+(p-values for ANOVA, year by year)
+```{r}
+anova_condensed(subset, 0.001)
+```
+
+(Ratios of Highest / Lowest reimbursements, year by year)
+```{r}
+subset[subset$DCI.00.Quintile == "Lowest" | subset$DCI.00.Quintile == "Highest",] %>%
+  group_by(DCI.00.Quintile, Year) %>%
+  summarise(wtd.ASR.Non.HMO.Mortality = weighted.mean(ASR.Non.HMO.Mortality, Enrollees),
+            .groups = 'drop') %>%
+  spread(DCI.00.Quintile, wtd.ASR.Non.HMO.Mortality) %>%
+  mutate(Highest.over.Lowest = Highest / Lowest)
+```
+
+By quintile: **2017 DCI**
+```{r}
+# subset <- select(mortality_merged, HSA, Year, DCI.17.Quintile, Enrollees, ASR.Non.HMO.Mortality)
+# 
+# ratios_summary <- subset[subset$DCI.17.Quintile == "Lowest" | subset$DCI.17.Quintile == "Highest",] %>%
+#   group_by(DCI.17.Quintile, Year) %>%
+#   summarise(wtd.ASR.Non.HMO.Mortality = weighted.mean(ASR.Non.HMO.Mortality, Enrollees),
+#             .groups = 'drop') %>%
+#   spread(DCI.17.Quintile, wtd.ASR.Non.HMO.Mortality) %>%
+#   mutate(Highest.over.Lowest = Highest / Lowest)
+# ratios_summary
+# 
+# plot_hsas(subset, ylab = "Non-HMO mortality (ASR-adj)")
+# plot_weighted(subset, ylab = "Non-HMO mortality (ASR-adj)",
+#               linetype_values = c('dotted', 'dashed', 'twodash', 'solid', 'solid'),
+#               linesize_values = c(0.5, 0.5, 0.5, 0.5, 1),
+#               y_lims = c(3.5, 6),
+#               dollars_not_percent = FALSE)
+```
+
+# Though mortality rates have declined since 1999 in all groups, mortality rates are consistently higher in HSAs with higher DCI, i.e., economically worse-off places.
+
+By quintile: **Change in DCI**
+```{r}
+# subset <- select(mortality_merged, HSA, Year, D.DCI.Mod.Quintile, Enrollees, ASR.Non.HMO.Mortality)
+# 
+# plot_hsas(subset, ylab = "Non-HMO mortality (%, ASR-adj)", quantile_type = "DCI change")
+# plot_weighted(subset, ylab = "Non-HMO mortality (%, ASR-adj)", quantile_type = "DCI change", inset = FALSE)
+```
+
+By cross-quintile: **Change in DCI from lowest 2000**
+```{r}
+subset_temp_0 <- mortality_merged[mortality_merged$DCI.00.Quintile == "Lowest",]
+subset_0 <- select(subset_temp_0, HSA, Year, DCI.17.HighThree, Enrollees, ASR.Non.HMO.Mortality)
+levels(subset_0$DCI.17.HighThree) <- c("≤ Lower 2017 DCI"="Lowest > Low", "≥ Mid 2017 DCI"="Lowest > High")
+colnames(subset_0) <- c("HSA", "Year", "DCI.Change", "Enrollees", "ASR.Non.HMO.Mortality")
+
+# subset_0 %>%
+#   group_by(DCI.Change) %>%
+#   summarise(n = n(),
+#             .groups = 'drop')
+
+subset_temp_1 <- mortality_merged[mortality_merged$DCI.00.Quintile == "Highest",]
+subset_1 <- select(subset_temp_1, HSA, Year, DCI.17.LowThree, Enrollees, ASR.Non.HMO.Mortality)
+levels(subset_1$DCI.17.LowThree) <- c("≤ Mid 2017 DCI"="Highest > Low", "≥ Higher 2017 DCI"="Highest > High")
+colnames(subset_1) <- c("HSA", "Year", "DCI.Change", "Enrollees", "ASR.Non.HMO.Mortality")
+
+# subset_1 %>%
+#   group_by(DCI.Change) %>%
+#   summarise(n = n(),
+#             .groups = 'drop')
+
+subsets_merged <- bind_rows(subset_0, subset_1)
+subsets_merged %>%
+  group_by(DCI.Change) %>%
+  summarise(n = n() / 13,    # divide by number of years to get number HSAs
+            .groups = 'drop')
+
+
+subsets_merged$DCI.Change <- factor(subsets_merged$DCI.Change, levels=c("Lowest > Low", "Lowest > High", "Highest > High", "Highest > Low"))
+
+plot_weighted(subsets_merged, ylab = "Fee-for-service mortality rate (ASR-adj)",
+              legend_title = "",
+              legend_values = c("Lowest > Low" = "Started and remained low", "Lowest > High" = "Started low but got worse", "Highest > High" = "Started and remained high", "Highest > Low" = "Started high and got better"),
+              linetype_values = c('solid', 'dotted', 'solid', 'dotted'),
+              linesize_values = c(0.5, 0.5, 1, 1),
+              y_lims = c(3.5, 6),
+              dollars_not_percent = FALSE) +
+  guides(linesize=guide_legend(nrow=2,byrow=TRUE)) + 
+  guides(linetype=guide_legend(nrow=2,byrow=TRUE))
+
+height = 5 * 1.075
+aspect_ratio = 1.42 / 1.075
+ggsave("/Users/harperwallace/Dropbox/GitHub/howw-dci-medicare-2020/_drafts/_figures/2b.png", height = height, width = height * aspect_ratio, units = "in")
+
+old_hsas <- unique(subsets_merged %>% select(HSA, DCI.Change))
+
+# p + theme(legend.position = 'none')
+```
+
+# Mortality rates are highest in HSAs with the greatest increase in DCI (2000--2017), i.e., places that became dramatically economically worse-off.
+
+
+```{r}
+subsets_merged[subsets_merged$Year == 2003 | subsets_merged$Year == 2015, ] %>%
+     group_by(DCI.Change, Year) %>%
+     summarise(n = n(),
+               wtd.Measure = weighted.mean(ASR.Non.HMO.Mortality, Enrollees),
+               se.Measure = weighted_se(ASR.Non.HMO.Mortality, Enrollees),
+               .groups = 'drop')
+```
+
+
+(p-values for ANOVA, year by year)
+```{r}
+anova_condensed(subsets_merged, 0.10)
+```
